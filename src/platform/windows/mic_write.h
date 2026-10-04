@@ -19,6 +19,7 @@
 #include <mmdeviceapi.h>
 
 #include "apollo_vmic.h"
+#include "src/mic_redirect.h"
 #include "src/platform/common.h"
 
 struct OpusDecoder;
@@ -58,6 +59,7 @@ namespace platf::audio {
     std::uint32_t infer_packet_duration_samples(std::uint32_t current_timestamp, std::uint32_t next_timestamp) const;
     bool should_conceal_missing_packet_locked() const;
     void append_decoded_frames(const float *samples, int decoded_frames, std::uint16_t sequence_number);
+    void reset_playout_locked();
 
     util::safe_ptr<IMMDeviceEnumerator, release_com<IMMDeviceEnumerator>> device_enum;
     util::safe_ptr<IAudioClient, release_com<IAudioClient>> audio_client;
@@ -82,5 +84,8 @@ namespace platf::audio {
     bool has_playout_cursor = false;
     bool playout_started = false;
     bool playout_wait_logged = false;
+    // Set by the render thread when WASAPI invalidates the device; the next write re-initializes it.
+    std::atomic<bool> device_invalidated {false};
+    mic_redirect::recovery_limiter_t recovery_limiter {std::chrono::seconds {2}};
   };
 }  // namespace platf::audio

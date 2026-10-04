@@ -26,6 +26,7 @@ extern "C" {
 #include "globals.h"
 #include "input.h"
 #include "logging.h"
+#include "mic_redirect.h"
 #include "network.h"
 #include "platform/common.h"
 #include "process.h"
@@ -1336,23 +1337,17 @@ namespace stream {
     }
   }
 
-  session_t *find_mic_session(broadcast_ctx_t &ctx, const udp::endpoint &peer) {
-    auto lg = ctx.control_server._sessions.lock();
-    for (auto *stream_session : *ctx.control_server._sessions) {
-      if (!stream_session->audio.enable_mic) {
-        continue;
-      }
-
-      if (stream_session->state.load(std::memory_order_relaxed) != stream::session::state_e::RUNNING) {
-        continue;
-      }
-
-      if (stream_session->audio.peer.address() == peer.address()) {
-        return stream_session;
-      }
-    }
-
-    return nullptr;
+  /**
+   * @brief Find the mic session a packet from @p peer belongs to. The caller must hold the session list lock.
+   * @note When a client reconnects, its old session stays RUNNING until the ping timeout and shares the
+   *       client's IP; the newest session is the one whose key the client is now using.
+   */
+  session_t *find_mic_session_locked(std::vector<session_t *> &sessions, const udp::endpoint &peer) {
+    return mic_redirect::find_newest_if(sessions, [&](session_t *stream_session) {
+      return stream_session->audio.enable_mic &&
+             stream_session->state.load(std::memory_order_relaxed) == stream::session::state_e::RUNNING &&
+             stream_session->audio.peer.address() == peer.address();
+    });
   }
 
   void micRecvThread(broadcast_ctx_t &ctx) {
@@ -1389,7 +1384,9 @@ namespace stream {
         continue;
       }
 
-      auto *session = find_mic_session(ctx, peer);
+      // Hold the session list lock while using the session so it cannot be removed and freed underneath us.
+      auto lg = ctx.control_server._sessions.lock();
+      auto *session = find_mic_session_locked(*ctx.control_server._sessions, peer);
       if (session == nullptr) {
         continue;
       }
@@ -2074,7 +2071,6 @@ namespace stream {
 
   namespace session {
     std::atomic_uint running_sessions;
-    std::atomic_uint running_mic_sessions;
 
     state_e state(session_t &session) {
       return session.state.load(std::memory_order_relaxed);
@@ -2198,7 +2194,7 @@ namespace stream {
         exec_thread.detach();
       }
 
-      if (session.audio.enable_mic && running_mic_sessions.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+      if (session.audio.enable_mic) {
         audio::release_mic_redirect_device();
         audio::mic_debug_on_session_stop("Remote microphone session ended");
       }
@@ -2249,18 +2245,11 @@ namespace stream {
 
       if (session.audio.enable_mic) {
         audio::mic_debug_on_session_start(session.device_name, (session.config.encryptionFlagsEnabled & SS_ENC_MICROPHONE) != 0);
-        if (running_mic_sessions.fetch_add(1, std::memory_order_acq_rel) == 0) {
-          if (audio::init_mic_redirect_device() != 0) {
-            running_mic_sessions.fetch_sub(1, std::memory_order_acq_rel);
-            session.audio.enable_mic = false;
-            audio::mic_debug_on_backend_error("Microphone backend could not initialize on the host");
-            audio::mic_debug_on_session_stop("Microphone redirection requested, but the host backend could not initialize");
-            BOOST_LOG(warning) << "Client microphone redirection is unavailable for ["sv << session.device_name << ']';
-          } else {
-            BOOST_LOG(info) << "Client microphone redirection requested for ["sv << session.device_name
-                            << "] with encryption "sv
-                            << ((session.config.encryptionFlagsEnabled & SS_ENC_MICROPHONE) ? "enabled"sv : "disabled"sv);
-          }
+        if (audio::acquire_mic_redirect_device() != 0) {
+          session.audio.enable_mic = false;
+          audio::mic_debug_on_backend_error("Microphone backend could not initialize on the host");
+          audio::mic_debug_on_session_stop("Microphone redirection requested, but the host backend could not initialize");
+          BOOST_LOG(warning) << "Client microphone redirection is unavailable for ["sv << session.device_name << ']';
         } else {
           BOOST_LOG(info) << "Client microphone redirection requested for ["sv << session.device_name
                           << "] with encryption "sv

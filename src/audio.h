@@ -152,7 +152,14 @@ namespace audio {
    * @examples_end
    */
   bool is_audio_ctx_sink_available(const audio_ctx_t &ctx);
-  int init_mic_redirect_device();
+  /**
+   * @brief Register a starting mic session, initializing (or re-initializing) the host mic device.
+   * @return 0 on success; on failure the session must not use the mic.
+   */
+  int acquire_mic_redirect_device();
+  /**
+   * @brief Unregister an ending mic session; the last one releases the host mic device.
+   */
   void release_mic_redirect_device();
   int write_mic_data(const char *data, std::size_t len, std::uint16_t sequence_number, std::uint32_t timestamp);
   mic_debug_snapshot_t get_mic_debug_snapshot();

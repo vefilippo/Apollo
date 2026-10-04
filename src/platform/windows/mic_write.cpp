@@ -581,6 +581,22 @@ namespace platf::audio {
   }
 
   int mic_write_wasapi_t::write_data(const char *data, std::size_t len, std::uint16_t sequence_number, std::uint32_t timestamp) {
+    if (device_invalidated) {
+      // The render thread has exited, so cleanup() can join it safely from here.
+      if (!recovery_limiter.should_attempt(std::chrono::steady_clock::now())) {
+        return -1;
+      }
+
+      BOOST_LOG(warning) << "Reinitializing microphone playback device [" << target_device_name << "] after it was invalidated";
+      cleanup();
+      device_invalidated = false;
+      if (init() != 0) {
+        device_invalidated = true;
+        ::audio::mic_debug_on_backend_error("Steam microphone playback device could not be reinitialized yet; retrying");
+        return -1;
+      }
+    }
+
     if (!audio_client || audio_render == nullptr || opus_decoder == nullptr || data == nullptr || len == 0 || !render_event) {
       BOOST_LOG(warning) << "Client microphone packet rejected before decode because the WASAPI write path is not ready"
                          << " [seq=" << sequence_number
@@ -602,14 +618,22 @@ namespace platf::audio {
     bool stale_packet = false;
     bool duplicate_packet = false;
     bool trimmed_packet_queue = false;
+    bool resynced_stream = false;
     {
       std::lock_guard lock(queue_mutex);
 
-      if (has_playout_cursor) {
-        const auto behind = sequence_distance(expected_sequence_number, sequence_number);
-        if (behind != 0 && behind < 0x8000) {
+      switch (mic_redirect::classify_packet(has_playout_cursor, expected_sequence_number, sequence_number)) {
+        case mic_redirect::packet_disposition_e::stale:
           stale_packet = true;
-        }
+          break;
+        case mic_redirect::packet_disposition_e::resync:
+          // The client restarted its sequence (e.g. reconnected); start a fresh playout instead of
+          // dropping everything as stale or concealing until the sequence wraps.
+          reset_playout_locked();
+          resynced_stream = true;
+          break;
+        case mic_redirect::packet_disposition_e::accept:
+          break;
       }
 
       if (!stale_packet) {
@@ -626,6 +650,10 @@ namespace platf::audio {
           trimmed_packet_queue = true;
         }
       }
+    }
+
+    if (resynced_stream) {
+      BOOST_LOG(info) << "Microphone stream for [" << target_device_name << "] restarted at sequence " << sequence_number << "; resynchronizing playout";
     }
 
     if (stale_packet) {
@@ -783,6 +811,14 @@ namespace platf::audio {
     return decoded_frames > 0;
   }
 
+  void mic_write_wasapi_t::reset_playout_locked() {
+    pending_packets.clear();
+    pending_frames.clear();
+    expected_sequence_number = 0;
+    expected_timestamp = 0;
+    has_playout_cursor = false;
+  }
+
   void mic_write_wasapi_t::render_loop() {
     CoInitializeEx(nullptr, COINIT_MULTITHREADED | COINIT_SPEED_OVER_MEMORY);
     platf::adjust_thread_priority(platf::thread_priority_e::high);
@@ -808,7 +844,8 @@ namespace platf::audio {
         BOOST_LOG(debug) << "Couldn't query microphone playback padding for [" << target_device_name << "]: 0x"
                          << util::hex(status).to_string_view();
         if (is_recoverable_device_error(status)) {
-          ::audio::mic_debug_on_backend_error("Steam microphone playback device was invalidated during rendering. Restart the stream.");
+          ::audio::mic_debug_on_backend_error("Steam microphone playback device was invalidated during rendering. Apollo will reinitialize it.");
+          device_invalidated = true;
           break;
         }
         continue;
@@ -889,7 +926,8 @@ namespace platf::audio {
         BOOST_LOG(debug) << "Couldn't acquire microphone playback buffer for [" << target_device_name << "]: 0x"
                          << util::hex(status).to_string_view();
         if (FAILED(status) && is_recoverable_device_error(status)) {
-          ::audio::mic_debug_on_backend_error("Steam microphone playback device was invalidated while acquiring a render buffer. Restart the stream.");
+          ::audio::mic_debug_on_backend_error("Steam microphone playback device was invalidated while acquiring a render buffer. Apollo will reinitialize it.");
+          device_invalidated = true;
           break;
         }
         continue;
@@ -911,7 +949,8 @@ namespace platf::audio {
         BOOST_LOG(debug) << "Couldn't release microphone playback buffer for [" << target_device_name << "]: 0x"
                          << util::hex(status).to_string_view();
         if (is_recoverable_device_error(status)) {
-          ::audio::mic_debug_on_backend_error("Steam microphone playback device was invalidated while releasing a render buffer. Restart the stream.");
+          ::audio::mic_debug_on_backend_error("Steam microphone playback device was invalidated while releasing a render buffer. Apollo will reinitialize it.");
+          device_invalidated = true;
           break;
         }
       }

@@ -17,6 +17,7 @@
 #include "config.h"
 #include "globals.h"
 #include "logging.h"
+#include "mic_redirect.h"
 #include "platform/common.h"
 #include "thread_safe.h"
 #include "utility.h"
@@ -318,43 +319,50 @@ namespace audio {
     return ctx.control->is_sink_available(sink);
   }
 
-  int init_mic_redirect_device() {
-    auto &held_ref = mic_redirect_audio_ctx();
-    if (!held_ref) {
-      held_ref = get_audio_ctx_ref();
+  namespace {
+    int init_mic_redirect_device_locked() {
+      auto &held_ref = mic_redirect_audio_ctx();
+      if (!held_ref) {
+        held_ref = get_audio_ctx_ref();
+      }
+
+      auto &ref = held_ref;
+      if (!ref || !ref->control) {
+        mic_debug_on_backend_error("Audio control is unavailable; microphone redirection could not initialize");
+        ref = {};
+        return -1;
+      }
+
+      return ref->control->init_mic_redirect_device();
     }
 
-    auto &ref = held_ref;
-    if (!ref || !ref->control) {
-      mic_debug_on_backend_error("Audio control is unavailable; microphone redirection could not initialize");
-      return -1;
+    void release_mic_redirect_device_locked() {
+      auto &ref = mic_redirect_audio_ctx();
+      if (ref && ref->control) {
+        ref->control->release_mic_redirect_device();
+      }
+      ref = {};
     }
 
-    return ref->control->init_mic_redirect_device();
+    mic_redirect::device_guard_t &mic_device_guard() {
+      static mic_redirect::device_guard_t guard {init_mic_redirect_device_locked, release_mic_redirect_device_locked};
+      return guard;
+    }
+  }  // namespace
+
+  int acquire_mic_redirect_device() {
+    return mic_device_guard().acquire();
   }
 
   void release_mic_redirect_device() {
-    auto &ref = mic_redirect_audio_ctx();
-    if (!ref || !ref->control) {
-      ref = {};
-      return;
-    }
-
-    ref->control->release_mic_redirect_device();
-    ref = {};
+    mic_device_guard().release();
   }
 
   int write_mic_data(const char *data, std::size_t len, std::uint16_t sequence_number, std::uint32_t timestamp) {
-    auto &held_ref = mic_redirect_audio_ctx();
-    auto ref = held_ref ? held_ref : get_audio_ctx_ref();
-    if (!ref || !ref->control) {
-      BOOST_LOG(warning) << "Client microphone packet rejected before decode because audio control is unavailable"
-                         << " [seq=" << sequence_number << ", ts=" << timestamp << ", len=" << len << ']';
-      mic_debug_on_packet_dropped(sequence_number, "Audio control is unavailable while writing microphone data");
-      return -1;
-    }
-
-    return ref->control->write_mic_data(data, len, sequence_number, timestamp);
+    // Never blocks: while the device is initializing or releasing, the packet is dropped.
+    return mic_device_guard().with_device([&]() {
+      return mic_redirect_audio_ctx()->control->write_mic_data(data, len, sequence_number, timestamp);
+    });
   }
 
   mic_debug_snapshot_t get_mic_debug_snapshot() {
