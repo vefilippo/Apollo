@@ -175,6 +175,10 @@ namespace audio {
                                              bool recommended_format_enforced,
                                              bool recommended_format_active);
   void mic_debug_on_backend_error(const std::string &message);
+  /**
+   * @brief Record a backend error only if no more specific error has been recorded for this session.
+   */
+  void mic_debug_on_backend_error_if_unset(const std::string &message);
   void mic_debug_on_packet_received(std::uint16_t sequence_number, std::size_t payload_len);
   void mic_debug_on_packet_decrypt_error(std::uint16_t sequence_number, const std::string &message);
   void mic_debug_on_packet_dropped(std::uint16_t sequence_number, const std::string &message);

@@ -598,7 +598,10 @@ namespace platf::audio {
     }
 
     if (!audio_client || audio_render == nullptr || opus_decoder == nullptr || data == nullptr || len == 0 || !render_event) {
+      static mic_redirect::log_limiter_t rejected_log {std::chrono::seconds {10}};
+      if (std::size_t suppressed = 0; rejected_log.should_log(std::chrono::steady_clock::now(), suppressed)) {
       BOOST_LOG(warning) << "Client microphone packet rejected before decode because the WASAPI write path is not ready"
+                         << " (" << suppressed << " similar messages suppressed)"
                          << " [seq=" << sequence_number
                          << ", ts=" << timestamp
                          << ", len=" << len
@@ -607,6 +610,7 @@ namespace platf::audio {
                          << ", opus_decoder=" << static_cast<bool>(opus_decoder != nullptr)
                          << ", render_event=" << static_cast<bool>(render_event)
                          << ", data=" << static_cast<bool>(data != nullptr) << ']';
+      }
       return -1;
     }
 
@@ -646,7 +650,13 @@ namespace platf::audio {
 
         duplicate_packet = !inserted;
         if (inserted && pending_packets.size() > max_queued_packets) {
-          pending_packets.erase(pending_packets.begin());
+          std::vector<std::uint16_t> keys;
+          keys.reserve(pending_packets.size());
+          for (const auto &[key, _] : pending_packets) {
+            keys.push_back(key);
+          }
+          // Wraparound-aware: at 65535 -> 0 the numerically smallest key is the newest packet.
+          pending_packets.erase(has_playout_cursor ? mic_redirect::earliest_after(keys, expected_sequence_number) : mic_redirect::oldest_before(keys, sequence_number));
           trimmed_packet_queue = true;
         }
       }
@@ -692,7 +702,12 @@ namespace platf::audio {
       return true;
     }
 
-    const auto delta = sequence_distance(pending_packets.begin()->first, expected_sequence_number);
+    std::vector<std::uint16_t> keys;
+    keys.reserve(pending_packets.size());
+    for (const auto &[key, _] : pending_packets) {
+      keys.push_back(key);
+    }
+    const auto delta = sequence_distance(mic_redirect::earliest_after(keys, expected_sequence_number), expected_sequence_number);
     return delta != 0 && delta < 0x8000;
   }
 

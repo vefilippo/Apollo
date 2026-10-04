@@ -7,7 +7,9 @@
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <iterator>
 #include <mutex>
+#include <cstddef>
 #include <optional>
 #include <utility>
 
@@ -48,6 +50,36 @@ namespace mic_redirect {
 
     const auto ahead = static_cast<std::uint16_t>(sequence - expected);
     return ahead > threshold ? packet_disposition_e::resync : packet_disposition_e::accept;
+  }
+
+  /**
+   * @brief Of the given sequence numbers, the first one at or after @p cursor (wraparound-aware).
+   * @param keys A non-empty range of 16-bit sequence numbers.
+   */
+  template<class Range>
+  std::uint16_t earliest_after(const Range &keys, std::uint16_t cursor) {
+    auto best = *std::begin(keys);
+    for (auto key : keys) {
+      if (static_cast<std::uint16_t>(key - cursor) < static_cast<std::uint16_t>(best - cursor)) {
+        best = key;
+      }
+    }
+    return best;
+  }
+
+  /**
+   * @brief Of the given sequence numbers, the one furthest behind @p newest (wraparound-aware).
+   * @param keys A non-empty range of 16-bit sequence numbers.
+   */
+  template<class Range>
+  std::uint16_t oldest_before(const Range &keys, std::uint16_t newest) {
+    auto best = *std::begin(keys);
+    for (auto key : keys) {
+      if (static_cast<std::uint16_t>(newest - key) > static_cast<std::uint16_t>(newest - best)) {
+        best = key;
+      }
+    }
+    return best;
   }
 
   /**
@@ -148,6 +180,39 @@ namespace mic_redirect {
     std::mutex mutex;
     int user_count = 0;
     bool active = false;
+  };
+
+  /**
+   * @brief Rate-limits a repeated log message; reports how many were suppressed in between.
+   */
+  class log_limiter_t {
+  public:
+    explicit log_limiter_t(std::chrono::steady_clock::duration interval):
+        interval {interval} {
+    }
+
+    /**
+     * @param suppressed Set to the number of messages suppressed since the last one logged.
+     * @return Whether to log now.
+     */
+    bool should_log(std::chrono::steady_clock::time_point now, std::size_t &suppressed) {
+      std::lock_guard lock(mutex);
+      if (last_logged && now - *last_logged < interval) {
+        ++suppressed_count;
+        return false;
+      }
+
+      last_logged = now;
+      suppressed = suppressed_count;
+      suppressed_count = 0;
+      return true;
+    }
+
+  private:
+    std::chrono::steady_clock::duration interval;
+    std::optional<std::chrono::steady_clock::time_point> last_logged;
+    std::size_t suppressed_count = 0;
+    std::mutex mutex;
   };
 
   /**

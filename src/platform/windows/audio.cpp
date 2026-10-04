@@ -22,6 +22,7 @@
 #include "misc.h"
 #include "src/audio.h"
 #include "src/config.h"
+#include "src/mic_redirect.h"
 #include "src/logging.h"
 #include "src/platform/common.h"
 
@@ -848,8 +849,12 @@ namespace platf::audio {
 
     int write_mic_data(const char *data, std::size_t len, std::uint16_t sequence_number, std::uint32_t timestamp) override {
       if (!mic_redirect_device) {
-        BOOST_LOG(warning) << "Client microphone packet rejected before decode because no Windows microphone redirect device is active"
-                          << " [seq=" << sequence_number << ", ts=" << timestamp << ", len=" << len << ']';
+        static mic_redirect::log_limiter_t rejected_log {std::chrono::seconds {10}};
+        if (std::size_t suppressed = 0; rejected_log.should_log(std::chrono::steady_clock::now(), suppressed)) {
+          BOOST_LOG(warning) << "Client microphone packet rejected before decode because no Windows microphone redirect device is active"
+                                   << " [seq=" << sequence_number << ", ts=" << timestamp << ", len=" << len << ']'
+                                   << " (" << suppressed << " similar messages suppressed)";
+        }
         return -1;
       }
 

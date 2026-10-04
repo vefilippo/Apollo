@@ -25,8 +25,9 @@ function Install-ViGEmBus {
 
 function Test-ViGEmBusInstallSucceeded {
     param([Parameter(Mandatory)][int]$ExitCode)
-    # 3010 = installed successfully, reboot required
-    return $ExitCode -eq 0 -or $ExitCode -eq 3010
+    # 3010 = installed, reboot required; 1641 = installed, restart initiated;
+    # 1638 = another version of the product is already installed
+    return $ExitCode -in 0, 3010, 1641, 1638
 }
 
 function Test-ViGEmBusRunning {

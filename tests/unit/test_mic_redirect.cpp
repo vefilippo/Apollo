@@ -180,3 +180,36 @@ TEST(MicRedirectRecoveryLimiterTest, AllowsFirstAttemptThenWaitsForInterval) {
   EXPECT_FALSE(limiter.should_attempt(t0 + 1s));
   EXPECT_TRUE(limiter.should_attempt(t0 + 2s));
 }
+
+// oldest_sequence / earliest_after
+
+TEST(MicRedirectSequenceOrderTest, OldestRelativeToCursorAcrossWraparound) {
+  // Cursor at 65530: 65531 is the oldest queued packet even though 2 sorts first numerically.
+  std::vector<std::uint16_t> keys {2, 65531, 65534};
+  EXPECT_EQ(mic_redirect::earliest_after(keys, 65530), 65531);
+}
+
+TEST(MicRedirectSequenceOrderTest, EarliestAfterWithoutWrapIsSmallest) {
+  std::vector<std::uint16_t> keys {12, 10, 11};
+  EXPECT_EQ(mic_redirect::earliest_after(keys, 9), 10);
+}
+
+TEST(MicRedirectSequenceOrderTest, OldestRelativeToNewestAcrossWraparound) {
+  // No cursor yet: relative to the newest arrival (3), 65533 is the oldest.
+  std::vector<std::uint16_t> keys {1, 3, 65533};
+  EXPECT_EQ(mic_redirect::oldest_before(keys, 3), 65533);
+}
+
+// log_limiter_t
+
+TEST(MicRedirectLogLimiterTest, AllowsFirstThenSuppressesWithinInterval) {
+  mic_redirect::log_limiter_t limiter {10s};
+  const auto t0 = std::chrono::steady_clock::time_point {} + 100s;
+  std::size_t suppressed = 99;
+  EXPECT_TRUE(limiter.should_log(t0, suppressed));
+  EXPECT_EQ(suppressed, 0u);
+  EXPECT_FALSE(limiter.should_log(t0 + 1s, suppressed));
+  EXPECT_FALSE(limiter.should_log(t0 + 2s, suppressed));
+  EXPECT_TRUE(limiter.should_log(t0 + 10s, suppressed));
+  EXPECT_EQ(suppressed, 2u);
+}

@@ -481,6 +481,20 @@ namespace audio {
     append_mic_event(state, message);
   }
 
+  void mic_debug_on_backend_error_if_unset(const std::string &message) {
+    auto &state = mic_debug_state();
+    std::lock_guard lock(state.mutex);
+    if (!state.snapshot.last_error.empty()) {
+      append_mic_event(state, message);
+      return;
+    }
+
+    state.snapshot.last_error = message;
+    state.snapshot.render_active = false;
+    state.snapshot.state = message;
+    append_mic_event(state, message);
+  }
+
   void mic_debug_on_packet_received(std::uint16_t sequence_number, std::size_t payload_len) {
     auto &state = mic_debug_state();
     std::lock_guard lock(state.mutex);

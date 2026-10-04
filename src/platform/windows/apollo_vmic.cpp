@@ -6,6 +6,7 @@
 
 #include "mic_write.h"
 #include "src/logging.h"
+#include "src/mic_redirect.h"
 
 namespace platf::audio {
   apollo_vmic_t::~apollo_vmic_t() = default;
@@ -49,8 +50,12 @@ namespace platf::audio {
 
   int apollo_vmic_t::write_data(const char *data, std::size_t len, std::uint16_t sequence_number, std::uint32_t timestamp) {
     if (!speaker_backend) {
-      BOOST_LOG(warning) << "Client microphone packet rejected before decode because the Steam Streaming Microphone backend is missing"
-                         << " [seq=" << sequence_number << ", ts=" << timestamp << ", len=" << len << ']';
+      static mic_redirect::log_limiter_t rejected_log {std::chrono::seconds {10}};
+      if (std::size_t suppressed = 0; rejected_log.should_log(std::chrono::steady_clock::now(), suppressed)) {
+        BOOST_LOG(warning) << "Client microphone packet rejected before decode because the Steam Streaming Microphone backend is missing"
+                               << " [seq=" << sequence_number << ", ts=" << timestamp << ", len=" << len << ']'
+                               << " (" << suppressed << " similar messages suppressed)";
+      }
       log_missing_driver_once();
       return -1;
     }

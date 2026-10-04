@@ -41,6 +41,12 @@ The working implementation in this fork includes:
 - Enable `stream_mic` in Apollo.
 - Use a client build that supports Apollo microphone redirection.
 
+> [!NOTE]
+> When microphone streaming starts, Apollo sets the Windows default format of both Steam Streaming
+> Microphone endpoints to 2ch, 32-bit, 48000 Hz and leaves it that way. It is deliberately not restored
+> afterwards: changing an endpoint's format invalidates any app (e.g. Discord) that is still capturing from it.
+> To revert, change the format in Sound settings > the device > Advanced.
+
 ## Configuration Notes
 
 - `stream_mic` enables the host microphone redirect path.

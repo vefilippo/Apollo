@@ -65,6 +65,12 @@ Describe "Test-ViGEmBusInstallSucceeded" {
     It "treats 3010 (reboot required) as success" {
         Test-ViGEmBusInstallSucceeded -ExitCode 3010 | Should Be $true
     }
+    It "treats 1641 (installed, restart initiated) as success" {
+        Test-ViGEmBusInstallSucceeded -ExitCode 1641 | Should Be $true
+    }
+    It "treats 1638 (another version already installed) as success" {
+        Test-ViGEmBusInstallSucceeded -ExitCode 1638 | Should Be $true
+    }
     It "treats 1603 as failure" { Test-ViGEmBusInstallSucceeded -ExitCode 1603 | Should Be $false }
 }
 

@@ -1410,8 +1410,12 @@ namespace stream {
         *(std::uint32_t *) iv.data() = util::endian::big<std::uint32_t>(session->audio.avRiKeyId + sequence_number);
 
         if (session->audio.cipher.decrypt(std::string_view {reinterpret_cast<const char *>(payload), payload_len}, decrypted_payload, &iv) != 0) {
-          BOOST_LOG(warning) << "Dropping encrypted microphone packet with invalid payload for ["sv << session->device_name
-                             << "] sequence "sv << sequence_number;
+          static mic_redirect::log_limiter_t rejected_log {std::chrono::seconds {10}};
+          if (std::size_t suppressed = 0; rejected_log.should_log(std::chrono::steady_clock::now(), suppressed)) {
+            BOOST_LOG(warning) << "Dropping encrypted microphone packet with invalid payload for ["sv << session->device_name
+                               << "] sequence "sv << sequence_number
+                               << " ("sv << suppressed << " similar messages suppressed)"sv;
+          }
           audio::mic_debug_on_packet_decrypt_error(sequence_number, "Encrypted microphone packet could not be decrypted");
           continue;
         }
@@ -2247,7 +2251,7 @@ namespace stream {
         audio::mic_debug_on_session_start(session.device_name, (session.config.encryptionFlagsEnabled & SS_ENC_MICROPHONE) != 0);
         if (audio::acquire_mic_redirect_device() != 0) {
           session.audio.enable_mic = false;
-          audio::mic_debug_on_backend_error("Microphone backend could not initialize on the host");
+          audio::mic_debug_on_backend_error_if_unset("Microphone backend could not initialize on the host");
           audio::mic_debug_on_session_stop("Microphone redirection requested, but the host backend could not initialize");
           BOOST_LOG(warning) << "Client microphone redirection is unavailable for ["sv << session.device_name << ']';
         } else {

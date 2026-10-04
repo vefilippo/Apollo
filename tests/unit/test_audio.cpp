@@ -66,3 +66,16 @@ TEST_P(AudioTest, TestEncode) {
   timer.join();
   capture.join();
 }
+
+TEST(MicDebugStateTest, GenericBackendErrorDoesNotHideSpecificCause) {
+  audio::mic_debug_on_session_start("client", true);
+  audio::mic_debug_on_backend_error("Steam Streaming Microphone was not found on the host");
+  audio::mic_debug_on_backend_error_if_unset("Microphone backend could not initialize on the host");
+  EXPECT_EQ(audio::get_mic_debug_snapshot().last_error, "Steam Streaming Microphone was not found on the host");
+}
+
+TEST(MicDebugStateTest, GenericBackendErrorIsRecordedWhenNoCauseKnown) {
+  audio::mic_debug_on_session_start("client", true);
+  audio::mic_debug_on_backend_error_if_unset("Microphone backend could not initialize on the host");
+  EXPECT_EQ(audio::get_mic_debug_snapshot().last_error, "Microphone backend could not initialize on the host");
+}
