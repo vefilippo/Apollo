@@ -524,7 +524,7 @@ namespace config {
     "steam_streaming_microphone",  // mic_backend
     {},  // mic_device
     true,  // stream audio
-    false,  // stream microphone
+    true,  // stream microphone
     true,  // install_steam_drivers
     true, // keep_sink_default
     true, // auto_capture

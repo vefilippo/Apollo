@@ -910,13 +910,13 @@ editing the `conf` file in a text editor. Use the examples as reference.
     <tr>
         <td>Default</td>
         <td colspan="2">@code{}
-            disabled
+            enabled
             @endcode</td>
     </tr>
     <tr>
         <td>Example</td>
         <td colspan="2">@code{}
-            stream_mic = enabled
+            stream_mic = disabled
             @endcode</td>
     </tr>
 </table>
