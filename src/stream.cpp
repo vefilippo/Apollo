@@ -406,6 +406,8 @@ namespace stream {
       std::unique_ptr<platf::deinit_t> qos;
       bool enable_mic;
       bool first_mic_packet_logged;
+      std::optional<crypto::cipher::gcm_t> mic_cipher;
+      mic_redirect::replay_window_t mic_replay;
     } audio;
 
     struct {
@@ -1404,27 +1406,47 @@ namespace stream {
                         << "] with payload "sv << payload_len << " bytes";
       }
 
-      std::vector<std::uint8_t> decrypted_payload;
-      if (session->config.encryptionFlagsEnabled & SS_ENC_MICROPHONE) {
-        crypto::aes_t iv(16);
-        *(std::uint32_t *) iv.data() = util::endian::big<std::uint32_t>(session->audio.avRiKeyId + sequence_number);
-
-        if (session->audio.cipher.decrypt(std::string_view {reinterpret_cast<const char *>(payload), payload_len}, decrypted_payload, &iv) != 0) {
-          static mic_redirect::log_limiter_t rejected_log {std::chrono::seconds {10}};
-          if (std::size_t suppressed = 0; rejected_log.should_log(std::chrono::steady_clock::now(), suppressed)) {
-            BOOST_LOG(warning) << "Dropping encrypted microphone packet with invalid payload for ["sv << session->device_name
-                               << "] sequence "sv << sequence_number
-                               << " ("sv << suppressed << " similar messages suppressed)"sv;
-          }
-          audio::mic_debug_on_packet_decrypt_error(sequence_number, "Encrypted microphone packet could not be decrypted");
-          continue;
-        }
-
-        payload = decrypted_payload.data();
+      // Only AES-GCM microphone packets are accepted (rtsp disables mic for any other negotiation).
+      if (!(session->config.encryptionFlagsEnabled & mic_redirect::encryption_flag_gcm) || !session->audio.mic_cipher) {
+        continue;
       }
 
-      const auto decoded_payload_len = decrypted_payload.empty() ? payload_len : decrypted_payload.size();
-      if (audio::write_mic_data(reinterpret_cast<const char *>(payload), decoded_payload_len, sequence_number, timestamp) < 0) {
+      static mic_redirect::log_limiter_t rejected_log {std::chrono::seconds {10}};
+      auto reject = [&](std::string_view reason) {
+        if (std::size_t suppressed = 0; rejected_log.should_log(std::chrono::steady_clock::now(), suppressed)) {
+          BOOST_LOG(warning) << "Dropping microphone packet for ["sv << session->device_name << "] sequence "sv << sequence_number
+                             << ": "sv << reason << " ("sv << suppressed << " similar messages suppressed)"sv;
+        }
+        audio::mic_debug_on_packet_decrypt_error(sequence_number, std::string {reason});
+      };
+
+      auto encrypted = mic_redirect::split_gcm_payload(std::string_view {reinterpret_cast<const char *>(payload), payload_len});
+      if (!encrypted) {
+        reject("encrypted payload too short"sv);
+        continue;
+      }
+
+      const auto iv_bytes = mic_redirect::gcm_iv(encrypted->counter);
+      crypto::aes_t iv(iv_bytes.begin(), iv_bytes.end());
+      std::vector<std::uint8_t> decrypted_payload;
+      if (session->audio.mic_cipher->decrypt(encrypted->tagged_cipher, decrypted_payload, &iv) != 0) {
+        reject("AES-GCM authentication failed"sv);
+        continue;
+      }
+
+      auto opus_frame = mic_redirect::unwrap_inner(decrypted_payload, sequence_number, timestamp);
+      if (!opus_frame) {
+        reject("sequence/timestamp do not match the authenticated header"sv);
+        continue;
+      }
+
+      // Only authenticated packets may advance the replay window.
+      if (!session->audio.mic_replay.accept(encrypted->counter)) {
+        audio::mic_debug_on_packet_dropped(sequence_number, "Dropped a replayed or too-old microphone packet");
+        continue;
+      }
+
+      if (audio::write_mic_data(opus_frame->data(), opus_frame->size(), sequence_number, timestamp) < 0) {
         BOOST_LOG(debug) << "Dropping microphone packet for ["sv << session->device_name << ']';
         audio::mic_debug_on_packet_dropped(sequence_number, "Host microphone render path rejected the packet");
       }
@@ -2248,7 +2270,7 @@ namespace stream {
       session.audio.peer.port(0);
 
       if (session.audio.enable_mic) {
-        audio::mic_debug_on_session_start(session.device_name, (session.config.encryptionFlagsEnabled & SS_ENC_MICROPHONE) != 0);
+        audio::mic_debug_on_session_start(session.device_name, (session.config.encryptionFlagsEnabled & mic_redirect::encryption_flag_gcm) != 0);
         if (audio::acquire_mic_redirect_device() != 0) {
           session.audio.enable_mic = false;
           audio::mic_debug_on_backend_error_if_unset("Microphone backend could not initialize on the host");
@@ -2257,7 +2279,7 @@ namespace stream {
         } else {
           BOOST_LOG(info) << "Client microphone redirection requested for ["sv << session.device_name
                           << "] with encryption "sv
-                          << ((session.config.encryptionFlagsEnabled & SS_ENC_MICROPHONE) ? "enabled"sv : "disabled"sv);
+                          << ((session.config.encryptionFlagsEnabled & mic_redirect::encryption_flag_gcm) ? "AES-GCM"sv : "disabled"sv);
         }
       }
 
@@ -2367,6 +2389,8 @@ namespace stream {
       session->audio.timestamp = 0;
       session->audio.enable_mic = launch_session.enable_mic && config::audio.stream_mic;
       session->audio.first_mic_packet_logged = false;
+      session->audio.mic_cipher.emplace(launch_session.gcm_key, false);
+      session->audio.mic_replay = {};
 
       session->control.peer = nullptr;
       session->state.store(state_e::STOPPED, std::memory_order_relaxed);

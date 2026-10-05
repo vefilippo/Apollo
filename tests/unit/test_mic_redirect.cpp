@@ -4,6 +4,7 @@
  */
 #include "../tests_common.h"
 
+#include <array>
 #include <atomic>
 #include <src/mic_redirect.h>
 #include <thread>
@@ -212,4 +213,76 @@ TEST(MicRedirectLogLimiterTest, AllowsFirstThenSuppressesWithinInterval) {
   EXPECT_FALSE(limiter.should_log(t0 + 2s, suppressed));
   EXPECT_TRUE(limiter.should_log(t0 + 10s, suppressed));
   EXPECT_EQ(suppressed, 2u);
+}
+
+// AES-GCM microphone transport
+
+TEST(MicRedirectGcmTest, NonceIsCounterPlusClientMicFixedField) {
+  const auto iv = mic_redirect::gcm_iv(0x0102030405060708ull);
+  const std::array<std::uint8_t, 12> expected {0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01, 0, 0, 'C', 'M'};
+  EXPECT_EQ(iv, expected);
+}
+
+TEST(MicRedirectGcmTest, NonceFixedFieldDiffersFromControlAndVideo) {
+  const auto iv = mic_redirect::gcm_iv(0);
+  // Control uses 'C','C' / 'H','C' and video uses 'V' in byte 11.
+  EXPECT_EQ(iv[11], 'M');
+}
+
+TEST(MicRedirectGcmTest, SplitsCounterAndTaggedCipher) {
+  std::string payload(8 + 16 + 10, '\0');
+  payload[0] = 0x2A;  // counter = 42, little endian
+  payload[8] = 'T';  // first tag byte
+  auto parts = mic_redirect::split_gcm_payload(payload);
+  ASSERT_TRUE(parts.has_value());
+  EXPECT_EQ(parts->counter, 42u);
+  EXPECT_EQ(parts->tagged_cipher.size(), 16u + 10u);
+  EXPECT_EQ(parts->tagged_cipher.front(), 'T');
+}
+
+TEST(MicRedirectGcmTest, RejectsPayloadTooShortForCounterTagAndInnerHeader) {
+  EXPECT_FALSE(mic_redirect::split_gcm_payload(std::string(8 + 16 + 5, '\0')).has_value());
+}
+
+TEST(MicRedirectGcmTest, UnwrapsInnerHeaderWhenItMatchesOuterHeader) {
+  const std::vector<std::uint8_t> plaintext {0x34, 0x12, 0x78, 0x56, 0x34, 0x12, 0xAA, 0xBB};
+  auto opus = mic_redirect::unwrap_inner(plaintext, 0x1234, 0x12345678);
+  ASSERT_TRUE(opus.has_value());
+  EXPECT_EQ(opus->size(), 2u);
+  EXPECT_EQ(static_cast<std::uint8_t>((*opus)[0]), 0xAA);
+}
+
+TEST(MicRedirectGcmTest, RejectsTamperedOuterSequenceOrTimestamp) {
+  const std::vector<std::uint8_t> plaintext {0x34, 0x12, 0x78, 0x56, 0x34, 0x12, 0xAA};
+  EXPECT_FALSE(mic_redirect::unwrap_inner(plaintext, 0x1235, 0x12345678).has_value());
+  EXPECT_FALSE(mic_redirect::unwrap_inner(plaintext, 0x1234, 0x12345679).has_value());
+}
+
+TEST(MicRedirectReplayWindowTest, AcceptsNewCountersOnce) {
+  mic_redirect::replay_window_t window;
+  EXPECT_TRUE(window.accept(0));
+  EXPECT_TRUE(window.accept(1));
+  EXPECT_FALSE(window.accept(1));
+}
+
+TEST(MicRedirectReplayWindowTest, AcceptsReorderedPacketsWithinWindow) {
+  mic_redirect::replay_window_t window;
+  EXPECT_TRUE(window.accept(10));
+  EXPECT_TRUE(window.accept(7));
+  EXPECT_FALSE(window.accept(7));
+}
+
+TEST(MicRedirectReplayWindowTest, RejectsCountersOlderThanWindow) {
+  mic_redirect::replay_window_t window;
+  EXPECT_TRUE(window.accept(1000));
+  EXPECT_FALSE(window.accept(1000 - 64));
+  EXPECT_TRUE(window.accept(1000 - 63));
+}
+
+TEST(MicRedirectReplayWindowTest, LargeJumpClearsHistory) {
+  mic_redirect::replay_window_t window;
+  EXPECT_TRUE(window.accept(5));
+  EXPECT_TRUE(window.accept(500));
+  EXPECT_FALSE(window.accept(5));
+  EXPECT_TRUE(window.accept(499));
 }

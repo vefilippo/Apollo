@@ -4,6 +4,7 @@
  */
 #pragma once
 
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <functional>
@@ -11,6 +12,8 @@
 #include <mutex>
 #include <cstddef>
 #include <optional>
+#include <string_view>
+#include <vector>
 #include <utility>
 
 namespace mic_redirect {
@@ -51,6 +54,123 @@ namespace mic_redirect {
     const auto ahead = static_cast<std::uint16_t>(sequence - expected);
     return ahead > threshold ? packet_disposition_e::resync : packet_disposition_e::accept;
   }
+
+  /**
+   * @brief Encryption capability bit for AES-GCM microphone packets (local protocol extension).
+   *        Negotiated alongside SS_ENC_MICROPHONE (0x08, AES-CBC); this build requires it.
+   */
+  constexpr std::uint32_t encryption_flag_gcm = 0x10;
+
+  constexpr std::size_t gcm_counter_size = 8;
+  constexpr std::size_t gcm_tag_size = 16;
+  constexpr std::size_t inner_header_size = 6;  ///< sequence (LE16) + timestamp (LE32)
+
+  /**
+   * @brief 12-byte AES-GCM nonce for a client-originated microphone packet.
+   *
+   * Deterministic construction per NIST SP 800-38D 8.2.1: the client's 64-bit packet counter is the
+   * invocation field and 'C','M' (client, microphone) is the fixed field, distinct from the fixed
+   * fields of every other AES-GCM use of the session key ('H'/'C','C' control, 'V' video).
+   */
+  inline std::array<std::uint8_t, 12> gcm_iv(std::uint64_t counter) {
+    std::array<std::uint8_t, 12> iv {};
+    for (std::size_t i = 0; i < gcm_counter_size; ++i) {
+      iv[i] = static_cast<std::uint8_t>(counter >> (8 * i));
+    }
+    iv[10] = 'C';
+    iv[11] = 'M';
+    return iv;
+  }
+
+  struct gcm_payload_t {
+    std::uint64_t counter;
+    std::string_view tagged_cipher;  ///< 16-byte tag followed by ciphertext
+  };
+
+  /**
+   * @brief Split an encrypted microphone payload into its counter and tag+ciphertext.
+   * @return nullopt if too short to hold counter, tag and the encrypted inner header.
+   */
+  inline std::optional<gcm_payload_t> split_gcm_payload(std::string_view payload) {
+    if (payload.size() < gcm_counter_size + gcm_tag_size + inner_header_size) {
+      return std::nullopt;
+    }
+
+    std::uint64_t counter = 0;
+    for (std::size_t i = 0; i < gcm_counter_size; ++i) {
+      counter |= static_cast<std::uint64_t>(static_cast<std::uint8_t>(payload[i])) << (8 * i);
+    }
+
+    return gcm_payload_t {counter, payload.substr(gcm_counter_size)};
+  }
+
+  /**
+   * @brief Check the authenticated inner header against the packet's plaintext header.
+   * @return The Opus frame, or nullopt if the outer sequence/timestamp were tampered with.
+   */
+  inline std::optional<std::string_view> unwrap_inner(const std::vector<std::uint8_t> &plaintext, std::uint16_t sequence, std::uint32_t timestamp) {
+    if (plaintext.size() < inner_header_size) {
+      return std::nullopt;
+    }
+
+    const auto inner_sequence = static_cast<std::uint16_t>(plaintext[0] | (plaintext[1] << 8));
+    const auto inner_timestamp = static_cast<std::uint32_t>(plaintext[2]) |
+                                 (static_cast<std::uint32_t>(plaintext[3]) << 8) |
+                                 (static_cast<std::uint32_t>(plaintext[4]) << 16) |
+                                 (static_cast<std::uint32_t>(plaintext[5]) << 24);
+    if (inner_sequence != sequence || inner_timestamp != timestamp) {
+      return std::nullopt;
+    }
+
+    return std::string_view {reinterpret_cast<const char *>(plaintext.data()) + inner_header_size, plaintext.size() - inner_header_size};
+  }
+
+  /**
+   * @brief Sliding-window replay protection over a 64-bit packet counter (RFC 4303 style).
+   */
+  class replay_window_t {
+  public:
+    static constexpr std::uint64_t window_size = 64;
+
+    /**
+     * @return true the first time a counter within the window is seen; false for duplicates and
+     *         counters older than the window.
+     */
+    bool accept(std::uint64_t counter) {
+      if (!any_seen) {
+        any_seen = true;
+        highest = counter;
+        seen = 1;
+        return true;
+      }
+
+      if (counter > highest) {
+        const auto shift = counter - highest;
+        seen = shift >= window_size ? 0 : seen << shift;
+        seen |= 1;
+        highest = counter;
+        return true;
+      }
+
+      const auto offset = highest - counter;
+      if (offset >= window_size) {
+        return false;
+      }
+
+      const auto bit = std::uint64_t {1} << offset;
+      if (seen & bit) {
+        return false;
+      }
+
+      seen |= bit;
+      return true;
+    }
+
+  private:
+    bool any_seen = false;
+    std::uint64_t highest = 0;
+    std::uint64_t seen = 0;  ///< bit i set => counter (highest - i) was accepted
+  };
 
   /**
    * @brief Of the given sequence numbers, the first one at or after @p cursor (wraparound-aware).

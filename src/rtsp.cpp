@@ -27,6 +27,7 @@ extern "C" {
 #include "input.h"
 #include "logging.h"
 #include "network.h"
+#include "mic_redirect.h"
 #include "rtsp.h"
 #include "stream.h"
 #include "sync.h"
@@ -795,8 +796,8 @@ namespace rtsp_stream {
     uint32_t encryption_flags_requested = SS_ENC_CONTROL_V2;
 
     if (config::audio.stream_mic) {
-      encryption_flags_supported |= SS_ENC_MICROPHONE;
-      encryption_flags_requested |= SS_ENC_MICROPHONE;
+      encryption_flags_supported |= SS_ENC_MICROPHONE | mic_redirect::encryption_flag_gcm;
+      encryption_flags_requested |= SS_ENC_MICROPHONE | mic_redirect::encryption_flag_gcm;
     }
 
     // Determine the encryption desired for this remote endpoint
@@ -1171,10 +1172,10 @@ namespace rtsp_stream {
     }
 
     if (session.enable_mic &&
-        !(config.encryptionFlagsEnabled & SS_ENC_MICROPHONE)) {
+        !(config.encryptionFlagsEnabled & mic_redirect::encryption_flag_gcm)) {
       BOOST_LOG(warning) << "Disabling microphone redirection for ["sv << session.device_name
-                         << "] because the client did not negotiate microphone encryption";
-      audio::mic_debug_on_session_stop("Microphone redirection requires encrypted transport. This client negotiated plaintext microphone packets, so mic passthrough was disabled for the session.");
+                         << "] because the client did not negotiate AES-GCM microphone encryption";
+      audio::mic_debug_on_session_stop("Microphone redirection requires AES-GCM encrypted transport. This client did not negotiate it (plaintext or legacy AES-CBC), so mic passthrough was disabled for the session.");
       session.enable_mic = false;
     }
 
