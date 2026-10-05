@@ -1,5 +1,16 @@
 # Apollo
 
+> **About this fork** — personal build of [ClassicOldSong/Apollo](https://github.com/ClassicOldSong/Apollo) with microphone passthrough and Windows/AMD fixes. Pair it with [Artemis Android](https://github.com/vefilippo/moonlight-android) or [Artemis desktop](https://github.com/vefilippo/artemis) from the same account.
+>
+> - **Microphone passthrough** — merges upstream PR #1428 (client mic → *Microphone (Steam Streaming Microphone)*), hardened: reconnect-safe playout, serialized device lifetime, automatic recovery after audio-device changes, rate-limited logging; enabled by default (`stream_mic`).
+> - **AES-GCM microphone transport (required)** — authenticated encryption with a 64-bit counter nonce and replay window, negotiated via encryption flag `0x10`; legacy plaintext/CBC mic packets are refused. Needs a matching client (links above).
+> - **Controllers** — the bundled ViGEmBus is installed silently and waited for (no extra window or reboot prompt).
+> - **AMD fix** — FFmpeg 8.0 build-deps; fixes the AMF encoder-probe hang on RDNA4 (ClassicOldSong/Apollo#1588).
+> - **Installer** — ships the missing `SudoVDA.dll`/`nefconc.exe` so the virtual display driver installs from a local build.
+> - Version reports as `0.4.6.<commit>`; mic stream uses UDP port base+12 (48001 by default).
+>
+> Binaries: see [Releases](https://github.com/vefilippo/Apollo/releases).
+
 Apollo is a self-hosted desktop stream host for [Artemis(Moonlight Noir)](https://github.com/ClassicOldSong/moonlight-android). Offering low latency, native client resolution, cloud gaming server capabilities with support for AMD, Intel, and Nvidia GPUs for hardware encoding. Software encoding is also available. A web UI is provided to allow configuration and client pairing from your favorite web browser. Pair from the local server or any mobile device.
 
 Major features:
