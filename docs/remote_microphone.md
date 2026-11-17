@@ -47,6 +47,13 @@ The working implementation in this fork includes:
 > afterwards: changing an endpoint's format invalidates any app (e.g. Discord) that is still capturing from it.
 > To revert, change the format in Sound settings > the device > Advanced.
 
+> [!IMPORTANT]
+> If `Speakers (Steam Streaming Microphone)` is muted, Windows zeroes everything Apollo writes to it, so
+> host applications hear silence even though the playback meter moves. Apollo unmutes it when microphone
+> streaming starts (it never changes the volume). If the mic is loud and distorted instead, check the level of
+> `Microphone (Steam Streaming Microphone)`: its range goes up to +30 dB, and 100% on the slider is +30 dB.
+> Around 53% is 0 dB (no gain).
+
 ## Configuration Notes
 
 - `stream_mic` enables the host microphone redirect path.
