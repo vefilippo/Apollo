@@ -20,7 +20,7 @@ The working implementation in this fork includes:
 
 - Dedicated microphone session handling in the stream path, including packet receive, optional decryption, and per-session lifecycle management.
 - Windows microphone backend initialization and teardown that stays alive for the full remote microphone session.
-- A Steam-backed Windows microphone path that auto-detects the Steam microphone render/capture pair, normalizes only that pair to `2ch, 32-bit, 48000 Hz` when microphone streaming starts, decodes Opus microphone frames as mono float `48 kHz`, and writes them into the Steam microphone render buffer using a `float32` shared-mode render client.
+- A Steam-backed Windows microphone path that auto-detects the Steam microphone render/capture pair, normalizes only that pair to `2ch, 16-bit, 48000 Hz` (the Steam driver outputs silence at 32-bit) when microphone streaming starts, decodes Opus microphone frames as mono float `48 kHz`, and writes them into the Steam microphone render buffer using a `float32` shared-mode render client.
 - Host-side recovery for recoverable WASAPI failures such as device invalidation or audio service restarts.
 - A Remote Microphone Debug panel in the web UI that shows packet arrival, decode status, render status, signal detection, counters, and recent mic events.
 
@@ -43,7 +43,7 @@ The working implementation in this fork includes:
 
 > [!NOTE]
 > When microphone streaming starts, Apollo sets the Windows default format of both Steam Streaming
-> Microphone endpoints to 2ch, 32-bit, 48000 Hz and leaves it that way. It is deliberately not restored
+> Microphone endpoints to 2ch, 16-bit, 48000 Hz and leaves it that way. It is deliberately not restored
 > afterwards: changing an endpoint's format invalidates any app (e.g. Discord) that is still capturing from it.
 > To revert, change the format in Sound settings > the device > Advanced.
 
@@ -51,7 +51,7 @@ The working implementation in this fork includes:
 
 - `stream_mic` enables the host microphone redirect path.
 - `mic_backend` defaults to `steam_streaming_microphone` on Windows in this fork.
-- On Windows, Apollo auto-detects the Steam Streaming Microphone pair and normalizes only those microphone endpoints to `2ch, 32-bit, 48000 Hz` automatically instead of requiring a manual device-properties change.
+- On Windows, Apollo auto-detects the Steam Streaming Microphone pair and normalizes only those microphone endpoints to `2ch, 16-bit, 48000 Hz` automatically instead of requiring a manual device-properties change.
 - `mic_device` is mainly relevant on non-Windows platforms. The Windows path currently targets Steam Streaming Microphone automatically.
 - Redirected microphone transport is always required to negotiate encrypted microphone packets. If the client falls back to plaintext microphone transport, Apollo disables microphone passthrough for that session instead of accepting unencrypted microphone packets.
 

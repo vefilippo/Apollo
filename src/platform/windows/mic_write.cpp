@@ -13,6 +13,7 @@
 #include <vector>
 
 #include <Audioclient.h>
+#include <endpointvolume.h>
 #include <ksmedia.h>
 #include <mmdeviceapi.h>
 #include <opus/opus.h>
@@ -191,8 +192,10 @@ namespace platf::audio {
       pcm_format.Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
       pcm_format.Format.nChannels = 2;
       pcm_format.Format.nSamplesPerSec = decoded_sample_rate;
-      pcm_format.Format.wBitsPerSample = 32;
-      pcm_format.Samples.wValidBitsPerSample = 32;
+      // The Steam Streaming Microphone driver (8.33.15.17) rejects 32-bit PCM (AUDCLNT_E_UNSUPPORTED_FORMAT);
+      // with a 32-bit device format its capture endpoint delivers only silence. 16-bit loops back correctly.
+      pcm_format.Format.wBitsPerSample = 16;
+      pcm_format.Samples.wValidBitsPerSample = 16;
       pcm_format.Format.nBlockAlign = static_cast<WORD>(pcm_format.Format.nChannels * (pcm_format.Format.wBitsPerSample / 8));
       pcm_format.Format.nAvgBytesPerSec = pcm_format.Format.nSamplesPerSec * pcm_format.Format.nBlockAlign;
       pcm_format.Format.cbSize = sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX);
@@ -226,7 +229,7 @@ namespace platf::audio {
       const auto parsed = parse_waveformat(format);
       return parsed.channels == 2 &&
              parsed.sample_rate == decoded_sample_rate &&
-             parsed.valid_bits_per_sample == 32;
+             parsed.valid_bits_per_sample == 16;
     }
 
     endpoint_format_info_t query_endpoint_format_info(IMMDeviceEnumerator *device_enum, const std::wstring &device_id) {
@@ -305,14 +308,47 @@ namespace platf::audio {
       status = policy->SetDeviceFormat(device_id.c_str(), recommended_format, reinterpret_cast<WAVEFORMATEX *>(&previous_format));
       if (FAILED(status)) {
         BOOST_LOG(warning) << "Couldn't set Steam microphone " << to_utf8(endpoint_label(flow))
-                           << " device format to stereo 32-bit 48k for [" << target_device_name << "]: 0x"
+                           << " device format to stereo 16-bit 48k for [" << target_device_name << "]: 0x"
                            << util::hex(status).to_string_view();
         return false;
       }
 
       BOOST_LOG(info) << "Changed Steam microphone " << to_utf8(endpoint_label(flow)) << " device format for [" << target_device_name
-                      << "] to [pcm, 32-bit, 48000 Hz, 2ch]";
+                      << "] to [pcm, 16-bit, 48000 Hz, 2ch]";
       return true;
+    }
+
+    /**
+     * @brief Unmute the Steam microphone render endpoint.
+     * @note A muted "Speakers (Steam Streaming Microphone)" endpoint zeroes everything Apollo renders before it
+     *       reaches the driver, so the paired capture endpoint delivers pure silence while the render peak meter
+     *       still shows signal. Only the mute flag is touched; the volume level is left to the user.
+     */
+    void ensure_steam_mic_render_unmuted(IMMDevice *device, const std::string &target_device_name) {
+      util::safe_ptr<IAudioEndpointVolume, release_com<IAudioEndpointVolume>> endpoint_volume;
+      auto status = device->Activate(__uuidof(IAudioEndpointVolume), CLSCTX_ALL, nullptr, reinterpret_cast<void **>(&endpoint_volume));
+      if (FAILED(status) || !endpoint_volume) {
+        BOOST_LOG(warning) << "Couldn't query mute state of Steam microphone playback device [" << target_device_name << "]: 0x"
+                           << util::hex(status).to_string_view();
+        return;
+      }
+
+      BOOL muted = FALSE;
+      status = endpoint_volume->GetMute(&muted);
+      if (FAILED(status) || !muted) {
+        return;
+      }
+
+      status = endpoint_volume->SetMute(FALSE, nullptr);
+      if (FAILED(status)) {
+        BOOST_LOG(warning) << "Steam microphone playback device [" << target_device_name
+                           << "] is muted and couldn't be unmuted; host applications will hear silence: 0x"
+                           << util::hex(status).to_string_view();
+        return;
+      }
+
+      BOOST_LOG(info) << "Unmuted Steam microphone playback device [" << target_device_name
+                      << "]; while muted, host applications receive only silence";
     }
 
     HRESULT initialize_shared_audio_client(IAudioClient *audio_client, const WAVEFORMATEX *format, DWORD stream_flags) {
@@ -452,6 +488,8 @@ namespace platf::audio {
       ::audio::mic_debug_on_backend_error("Could not open host microphone render device [" + target_device_name + "]");
       return false;
     }
+
+    ensure_steam_mic_render_unmuted(device.get(), target_device_name);
 
     status = device->Activate(IID_IAudioClient, CLSCTX_ALL, nullptr, (void **) &audio_client);
     if (FAILED(status) || !audio_client) {
